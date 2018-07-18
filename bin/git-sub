@@ -47,28 +47,28 @@ default_move_comment     = '"subtree: move {name}"'
 default_merge_comment    = 'subtree: update {name}'
 default_collapse_comment = 'subtree: {name}@{rev}'
 
-def git(*args, return_code = False):
+def git(*args):
     res = subprocess.run('git ' + ' '.join(list(args)), shell=True, capture_output=True)
-    if return_code:
-        return res.returncode
-    else:
-        return res.stdout.decode('utf-8').split('\n')
+    return res.returncode, res.stdout.decode('utf-8').strip().split('\n'), res.stderr.decode('utf-8').strip().split('\n')
 
 def find_branch():
-    for line in git('branch'):
+    for line in git('branch')[1]:
         if line.startswith("* "):
             return line.split()[1]
     raise ValueError("Cannot find branch")
 
 def ancestor(ref1, ref2):
-    return git("merge-base", "--is-ancestor", ref1, ref2, return_code=True) == 0
+    return git("merge-base", "--is-ancestor", ref1, ref2)[0] == 0
 
 
 def merge(ref, message=''):
+    args = ['merge', ref, '--allow-unrelated-histories']
     if message:
-        git('merge', '--allow-unrelated-histories', ref, '-m "%s"' % message)
-    else:
-        git('merge', ref, '--allow-unrelated-histories')
+        args.append('-m "%s"' % message)
+    res = git(*args)
+    if res[0] != 0:
+        print('\n'.join(res[1]))
+        #print('\n'.join(res[2]))
 
 def _parse_gitsub(fn):
     config = configparser.ConfigParser()
@@ -80,11 +80,11 @@ def _parse_gitsub(fn):
 
     return result
 
-def pull_(name, source, ref, destination):
+def pull_(name, source, ref, destination, check_ancestor = True):
     print("Pulling", name)
 
     # save current head
-    orig_head   = git("rev-list", "--max-count=1", "HEAD")[0]
+    orig_head   = git("rev-list", "--max-count=1", "HEAD")[1][0]
     orig_branch = find_branch()
 
     # fetch remote
@@ -94,7 +94,7 @@ def pull_(name, source, ref, destination):
     git('checkout', "FETCH_HEAD")
 
     # check if cur_head is reachable; if yes do nothing
-    if ancestor("HEAD", orig_branch):
+    if check_ancestor and ancestor("HEAD", orig_branch):
         print("Already merged, nothing to do")
         git('checkout', orig_branch)
         return
@@ -104,11 +104,16 @@ def pull_(name, source, ref, destination):
         if not cmd_line:     # skip blank lines
             continue
         print(cmd_line)
-        os.system(cmd_line)
+        res = subprocess.run(cmd_line, shell=True, capture_output=True)
+        print(res.stdout.decode('utf-8').strip(), end='')
+        print(res.stderr.decode('utf-8').strip(), end='')
+        if res.returncode != 0:
+            print("\nnon-zero return code, aborting")
+            return
     git('commit', '-a', '-m', default_move_comment.format(name=name))
 
     # save the manipulated head
-    sub_head = git("rev-list", "--max-count=1", "HEAD")[0]
+    sub_head = git("rev-list", "--max-count=1", "HEAD")[1][0]
 
     # switch back to orig_head
     git('checkout', orig_branch)
@@ -116,10 +121,10 @@ def pull_(name, source, ref, destination):
     # merge sub_head
     merge(sub_head, message=default_merge_comment.format(name=name))
 
-def pull(name = '', ref = ''):
+def pull(name = '', ref = '', check_ancestor = True):
     """Pull remote subrepositroy"""
 
-    root = git("rev-parse", "--show-toplevel")[0]
+    root = git("rev-parse", "--show-toplevel")[1][0]
     gitsub = default_gitsub     # TODO: query git config for gitsub name
     subs = _parse_gitsub(os.path.join(root, gitsub))
 
@@ -149,7 +154,7 @@ def pull(name = '', ref = ''):
             raise ValueError('No source found for %s' % name)
         source = sub['source']
 
-        pull_(name, source, ref, destination)
+        pull_(name, source, ref, destination, check_ancestor)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog="git sub", description="git sub command")
@@ -158,9 +163,10 @@ if __name__ == "__main__":
     parser_pull = subparsers.add_parser("pull", help="pull remote subrepostiory")
     parser_pull.add_argument('name', nargs='?', help="repo to pull")
     parser_pull.add_argument('-r', '--ref', nargs='?', help="ref to pull")
+    parser_pull.add_argument('--no-ancestor-check', action='store_false', help="do not check ancestor")
 
     args = parser.parse_args()
     if args.command != 'pull':
         parser.print_help()
     else:
-        pull(args.name, args.ref)
+        pull(args.name, args.ref, args.no_ancestor_check)
