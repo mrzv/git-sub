@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+
+# Copyright (c) 2018 Dmitriy Morozov <dmitriy@mrzv.org>.  All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification,
+# are permitted provided that the following conditions are met:
+#
+# (1) Redistributions of source code must retain the above copyright notice, this
+# list of conditions and the following disclaimer.
+#
+# (2) Redistributions in binary form must reproduce the above copyright notice,
+# this list of conditions and the following disclaimer in the documentation and/or
+# other materials provided with the distribution.
+#
+# (3) Neither the name of the copyright holder nor the names of its contributors
+# may be used to endorse or promote products derived from this software without
+# specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+# ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+# ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# You are under no obligation whatsoever to provide any bug fixes, patches, or
+# upgrades to the features, functionality or performance of the source code
+# ("Enhancements") to anyone; however, if you choose to make your Enhancements
+# available either publicly, or directly to the author of this software, without
+# imposing a separate written license agreement for such Enhancements, then you
+# hereby grant the following license: a  non-exclusive, royalty-free perpetual
+# license to install, use, modify, prepare derivative works, incorporate into
+# other computer software, distribute, and sublicense such enhancements or
+# derivative works thereof, in binary and source code form.
+
+import  sys, os, subprocess, configparser
+
+# TODO: make these configurable
+default_gitsub           = '.gitsub'
+default_bookmark_prefix  = 'subtree@'
+default_move_comment     = '"subtree: move {name}"'
+default_merge_comment    = 'subtree: update {name}'
+default_collapse_comment = 'subtree: {name}@{rev}'
+
+def git(*args, return_code = False):
+    res = subprocess.run('git ' + ' '.join(list(args)), shell=True, capture_output=True)
+    if return_code:
+        return res.returncode
+    else:
+        return res.stdout.decode('utf-8').split('\n')
+
+def find_branch():
+    for line in git('branch'):
+        if line.startswith("* "):
+            return line.split()[1]
+    raise ValueError("Cannot find branch")
+
+def ancestor(ref1, ref2):
+    return git("merge-base", "--is-ancestor", ref1, ref2, return_code=True) == 0
+
+
+def merge(ref, message=''):
+    if message:
+        git('merge', '--allow-unrelated-histories', ref, '-m "%s"' % message)
+    else:
+        git('merge', ref, '--allow-unrelated-histories')
+
+def _parse_gitsub(fn):
+    config = configparser.ConfigParser()
+    config.read(fn)
+
+    result = {}
+    for s in config.sections():
+        result[s] = dict(config.items(s))
+
+    return result
+
+def pull_(name, source, ref, destination):
+    print("Pulling", name)
+
+    # save current head
+    orig_head   = git("rev-list", "--max-count=1", "HEAD")[0]
+    orig_branch = find_branch()
+
+    # fetch remote
+    git('fetch', source, ref)
+
+    # switch to what we fetched
+    git('checkout', "FETCH_HEAD")
+
+    # check if cur_head is reachable; if yes do nothing
+    if ancestor("HEAD", orig_branch):
+        print("Already merged, nothing to do")
+        git('checkout', orig_branch)
+        return
+
+    # move files around
+    for cmd_line in destination.split('\n'):
+        if not cmd_line:     # skip blank lines
+            continue
+        print(cmd_line)
+        os.system(cmd_line)
+    git('commit', '-a', '-m', default_move_comment.format(name=name))
+
+    # save the manipulated head
+    sub_head = git("rev-list", "--max-count=1", "HEAD")[0]
+
+    # switch back to orig_head
+    git('checkout', orig_branch)
+
+    # merge sub_head
+    merge(sub_head, message=default_merge_comment.format(name=name))
+
+def pull(name = ''):
+    """Pull remote subrepositroy"""
+
+    root = git("rev-parse", "--show-toplevel")[0]
+    gitsub = default_gitsub     # TODO: query git config for gitsub name
+    subs = _parse_gitsub(os.path.join(root, gitsub))
+
+    # if names not in .gitsub, abort
+    # if names is empty, go through all repos in .gitsub
+    if name:
+        if name not in subs:
+            raise ValueError("Cannot find %s in %s." % (name, gitsub))
+        names = [name]
+    else:
+        names = subs.keys()
+
+    for name in names:
+        sub = subs[name]
+        if 'destination' not in sub:
+            raise ValueError('No destination found for %s' % name)
+        destination = sub['destination']
+
+        # figure out the revision to pull
+        if 'ref' in sub:
+            ref = sub['ref']
+        else:
+            ref = 'master'
+
+        if 'source' not in sub:
+            raise ValueError('No source found for %s' % name)
+        source = sub['source']
+
+        pull_(name, source, ref, destination)
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2 or sys.argv[1] != 'pull':
+        print("usage: git sub pull [NAME]")
+
+    name = '' if len(sys.argv) == 2 else sys.argv[2]
+
+    pull(name)
