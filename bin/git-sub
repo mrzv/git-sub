@@ -38,6 +38,7 @@
 # derivative works thereof, in binary and source code form.
 
 import  sys, os, subprocess, configparser
+import  argparse
 
 # TODO: make these configurable
 default_gitsub           = '.gitsub'
@@ -115,7 +116,7 @@ def pull_(name, source, ref, destination):
     # merge sub_head
     merge(sub_head, message=default_merge_comment.format(name=name))
 
-def pull(name = ''):
+def pull(name = '', ref = ''):
     """Pull remote subrepositroy"""
 
     root = git("rev-parse", "--show-toplevel")[0]
@@ -138,10 +139,11 @@ def pull(name = ''):
         destination = sub['destination']
 
         # figure out the revision to pull
-        if 'ref' in sub:
-            ref = sub['ref']
-        else:
-            ref = 'master'
+        if not ref:
+            if 'ref' in sub:
+                ref = sub['ref']
+            else:
+                ref = 'master'
 
         if 'source' not in sub:
             raise ValueError('No source found for %s' % name)
@@ -150,9 +152,15 @@ def pull(name = ''):
         pull_(name, source, ref, destination)
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2 or sys.argv[1] != 'pull':
-        print("usage: git sub pull [NAME]")
+    parser = argparse.ArgumentParser(prog="git sub", description="git sub command")
+    subparsers = parser.add_subparsers(dest="command", help='sub-command help')
 
-    name = '' if len(sys.argv) == 2 else sys.argv[2]
+    parser_pull = subparsers.add_parser("pull", help="pull remote subrepostiory")
+    parser_pull.add_argument('name', nargs='?', help="repo to pull")
+    parser_pull.add_argument('-r', '--ref', nargs='?', help="ref to pull")
 
-    pull(name)
+    args = parser.parse_args()
+    if args.command != 'pull':
+        parser.print_help()
+    else:
+        pull(args.name, args.ref)
